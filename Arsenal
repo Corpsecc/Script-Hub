@@ -1,0 +1,373 @@
+-- Drool Hub | Orion Edition
+local OrionLib = loadstring(game:HttpGet("https://raw.githubusercontent.com/jensonhirst/Orion/main/source"))()
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UIS = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+local RS = game:GetService("ReplicatedStorage")
+
+local LocalPlayer = Players.LocalPlayer
+local Camera = workspace.CurrentCamera
+
+-- ===== State =====
+local S = {
+	ESP = false, ESPTeamCheck = false, ESPNames = true,
+	Aimbot = false, AimTeamCheck = true, AimPart = "Head",
+	FOV = 55, Smooth = 0.03, DrawFOV = true,
+	Hitbox = false, HitboxSize = 13,
+	InfJump = false,
+	Speed = false, SpeedValue = 100,
+	InfAmmo = false, FireRate = false, NoRecoil = false,
+}
+local Holding = false
+
+-- ===== Helpers =====
+local function getHumanoid(char)
+	return char and char:FindFirstChildOfClass("Humanoid")
+end
+
+local function isTeammate(plr)
+	-- Only a teammate if both have a team and it's the same one.
+	-- (Old bug: games without teams have Team = nil for everyone, so nil == nil hid every player.)
+	if plr.Team ~= nil and LocalPlayer.Team ~= nil then
+		return plr.Team == LocalPlayer.Team
+	end
+	if plr.Neutral == false and LocalPlayer.Neutral == false then
+		return plr.TeamColor == LocalPlayer.TeamColor
+	end
+	return false
+end
+
+local function isEnemy(plr, teamCheck)
+	if plr == LocalPlayer then return false end
+	if teamCheck and isTeammate(plr) then return false end
+	return true
+end
+
+-- ===== ESP =====
+local espObjects = {}
+
+local function clearESP(plr)
+	local o = espObjects[plr]
+	if o then
+		for _, inst in pairs(o) do pcall(function() inst:Destroy() end) end
+		espObjects[plr] = nil
+	end
+end
+
+local function applyESP(plr)
+	clearESP(plr)
+	local char = plr.Character
+	if not char or not isEnemy(plr, S.ESPTeamCheck) then return end
+	local head = char:FindFirstChild("Head")
+	if not head then return end
+
+	local hl = Instance.new("Highlight")
+	hl.FillTransparency = 0.7
+	hl.OutlineColor = Color3.new(1, 1, 1)
+	hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+	hl.Parent = char
+
+	local bb = Instance.new("BillboardGui")
+	bb.AlwaysOnTop = true
+	bb.Size = UDim2.new(0, 200, 0, 20)
+	bb.StudsOffset = Vector3.new(0, 3, 0)
+	bb.Enabled = S.ESPNames
+	bb.Adornee = head
+	bb.Parent = head
+	local lbl = Instance.new("TextLabel")
+	lbl.BackgroundTransparency = 1
+	lbl.Size = UDim2.new(1, 0, 1, 0)
+	lbl.Text = plr.Name
+	lbl.TextColor3 = Color3.new(1, 1, 1)
+	lbl.TextStrokeTransparency = 0
+	lbl.TextSize = 12
+	lbl.Parent = bb
+
+	espObjects[plr] = {hl, bb}
+end
+
+local function refreshESP()
+	for _, plr in ipairs(Players:GetPlayers()) do
+		if S.ESP then applyESP(plr) else clearESP(plr) end
+	end
+end
+
+local function hookPlayer(plr)
+	plr.CharacterAdded:Connect(function()
+		task.wait(1)
+		if S.ESP then applyESP(plr) end
+	end)
+end
+for _, p in ipairs(Players:GetPlayers()) do hookPlayer(p) end
+Players.PlayerAdded:Connect(hookPlayer)
+Players.PlayerRemoving:Connect(clearESP)
+
+-- Keeps ESP in sync with Team Check: handles team switches, respawns,
+-- characters that load late, and toggling Team Check on/off.
+task.spawn(function()
+	while true do
+		task.wait(0.5)
+		for _, plr in ipairs(Players:GetPlayers()) do
+			local should = S.ESP and isEnemy(plr, S.ESPTeamCheck)
+			local o = espObjects[plr]
+			local valid = o and o[1] and o[1].Parent ~= nil and o[1].Parent == plr.Character
+			if should and not valid then
+				applyESP(plr)
+			elseif not should and o then
+				clearESP(plr)
+			end
+		end
+	end
+end)
+
+-- ===== FOV Circle =====
+local FovCircle
+pcall(function()
+	FovCircle = Drawing.new("Circle")
+	FovCircle.Filled = false
+	FovCircle.Thickness = 1
+	FovCircle.NumSides = 64
+	FovCircle.Color = Color3.new(1, 1, 1)
+end)
+
+-- ===== Aimbot =====
+local function getClosest()
+	local best, bestDist = nil, S.FOV
+	local mouse = UIS:GetMouseLocation()
+	for _, plr in ipairs(Players:GetPlayers()) do
+		if isEnemy(plr, S.AimTeamCheck) then
+			local char = plr.Character
+			local hum = getHumanoid(char)
+			local part = char and char:FindFirstChild(S.AimPart)
+			if hum and hum.Health > 0 and part then
+				local pos, onScreen = Camera:WorldToScreenPoint(part.Position)
+				if onScreen then
+					local d = (Vector2.new(pos.X, pos.Y) - mouse).Magnitude
+					if d < bestDist then best, bestDist = part, d end
+				end
+			end
+		end
+	end
+	return best
+end
+
+UIS.InputBegan:Connect(function(i)
+	if i.UserInputType == Enum.UserInputType.MouseButton2 then Holding = true end
+end)
+UIS.InputEnded:Connect(function(i)
+	if i.UserInputType == Enum.UserInputType.MouseButton2 then Holding = false end
+end)
+
+RunService.RenderStepped:Connect(function()
+	Camera = workspace.CurrentCamera
+	if FovCircle then
+		FovCircle.Position = UIS:GetMouseLocation()
+		FovCircle.Radius = S.FOV
+		FovCircle.Visible = S.Aimbot and S.DrawFOV
+	end
+	if S.Aimbot and Holding then
+		local target = getClosest()
+		if target then
+			TweenService:Create(Camera, TweenInfo.new(S.Smooth, Enum.EasingStyle.Sine, Enum.EasingDirection.Out),
+				{CFrame = CFrame.new(Camera.CFrame.Position, target.Position)}):Play()
+		end
+	end
+end)
+
+-- ===== Hitbox Expander ("Silent Aim") =====
+local HITBOX_PARTS = {"RightUpperLeg", "LeftUpperLeg", "HeadHB", "HumanoidRootPart"}
+local originals = {}
+
+local function restoreHitboxes()
+	for part, data in pairs(originals) do
+		if part and part.Parent then
+			part.Size = data.Size
+			part.Transparency = data.Transparency
+			part.CanCollide = data.CanCollide
+		end
+	end
+	originals = {}
+end
+
+task.spawn(function()
+	while true do
+		task.wait(1)
+		if S.Hitbox then
+			for _, plr in ipairs(Players:GetPlayers()) do
+				if plr ~= LocalPlayer and plr.Character then
+					for _, name in ipairs(HITBOX_PARTS) do
+						local p = plr.Character:FindFirstChild(name)
+						if p then
+							if not originals[p] then
+								originals[p] = {Size = p.Size, Transparency = p.Transparency, CanCollide = p.CanCollide}
+							end
+							p.CanCollide = false
+							p.Transparency = 1
+							p.Size = Vector3.new(S.HitboxSize, S.HitboxSize, S.HitboxSize)
+						end
+					end
+				end
+			end
+		end
+	end
+end)
+
+-- ===== Infinite Jump =====
+UIS.JumpRequest:Connect(function()
+	if S.InfJump then
+		local hum = getHumanoid(LocalPlayer.Character)
+		if hum then hum:ChangeState(Enum.HumanoidStateType.Jumping) end
+	end
+end)
+
+-- ===== Speed =====
+RunService.Heartbeat:Connect(function()
+	if S.Speed then
+		local hum = getHumanoid(LocalPlayer.Character)
+		if hum and hum.WalkSpeed ~= S.SpeedValue then hum.WalkSpeed = S.SpeedValue end
+	end
+end)
+
+-- ===== Weapon Mods =====
+task.spawn(function()
+	while true do
+		task.wait(5)
+		local weapons = RS:FindFirstChild("Weapons")
+		if weapons and (S.NoRecoil or S.FireRate) then
+			for _, v in ipairs(weapons:GetDescendants()) do
+				if S.NoRecoil and (v.Name == "RecoilControl" or v.Name == "MaxSpread") then
+					pcall(function() v.Value = 0 end)
+				end
+				if S.FireRate then
+					if v.Name == "Auto" then pcall(function() v.Value = true end) end
+					if v.Name == "FireRate" then pcall(function() v.Value = 0.02 end) end
+				end
+			end
+		end
+	end
+end)
+
+task.spawn(function()
+	while true do
+		task.wait()
+		if S.InfAmmo then
+			pcall(function()
+				local vars = LocalPlayer.PlayerGui.GUI.Client.Variables
+				vars.ammocount.Value = 999
+				vars.ammocount2.Value = 999
+			end)
+		end
+	end
+end)
+
+-- ===== Orion UI =====
+local Window = OrionLib:MakeWindow({
+	Name = "Drool Hub",
+	HidePremium = false,
+	SaveConfig = true,
+	ConfigFolder = "DroolHub",
+	IntroEnabled = true,
+	IntroText = "Drool Hub",
+})
+
+-- Visuals
+local Visuals = Window:MakeTab({Name = "Visuals", Icon = "rbxassetid://4483345998", PremiumOnly = false})
+Visuals:AddToggle({
+	Name = "Player ESP", Default = false, Save = true, Flag = "ESP",
+	Callback = function(v) S.ESP = v refreshESP() end,
+})
+Visuals:AddToggle({
+	Name = "ESP Team Check", Default = false, Save = true, Flag = "ESPTeam",
+	Callback = function(v) S.ESPTeamCheck = v if S.ESP then refreshESP() end end,
+})
+Visuals:AddToggle({
+	Name = "ESP Names", Default = true, Save = true, Flag = "ESPNames",
+	Callback = function(v)
+		S.ESPNames = v
+		for _, o in pairs(espObjects) do
+			if o[2] then o[2].Enabled = v end
+		end
+	end,
+})
+
+-- Combat
+local Combat = Window:MakeTab({Name = "Combat", Icon = "rbxassetid://4483345998", PremiumOnly = false})
+Combat:AddToggle({
+	Name = "Blatant Aimbot (hold Right Mouse)", Default = false, Save = true, Flag = "Aimbot",
+	Callback = function(v) S.Aimbot = v end,
+})
+Combat:AddToggle({
+	Name = "Aimbot Team Check", Default = true, Save = true, Flag = "AimTeam",
+	Callback = function(v) S.AimTeamCheck = v end,
+})
+Combat:AddToggle({
+	Name = "Draw FOV", Default = true, Save = true, Flag = "DrawFOV",
+	Callback = function(v) S.DrawFOV = v end,
+})
+Combat:AddDropdown({
+	Name = "Aim Part", Default = "Head", Options = {"Head", "HumanoidRootPart", "UpperTorso", "Torso"},
+	Callback = function(v) S.AimPart = v end,
+})
+Combat:AddSlider({
+	Name = "FOV Size", Min = 10, Max = 400, Default = 55, Increment = 1, ValueName = "px",
+	Callback = function(v) S.FOV = v end,
+})
+Combat:AddSlider({
+	Name = "Smoothness", Min = 0, Max = 100, Default = 3, Increment = 1, ValueName = "x0.01",
+	Callback = function(v) S.Smooth = v / 100 end,
+})
+Combat:AddToggle({
+	Name = "OP Silent Aim (Hitbox Expander)", Default = false, Save = true, Flag = "Hitbox",
+	Callback = function(v)
+		S.Hitbox = v
+		if not v then restoreHitboxes() end
+	end,
+})
+Combat:AddSlider({
+	Name = "Hitbox Size", Min = 2, Max = 25, Default = 13, Increment = 1, ValueName = "studs",
+	Callback = function(v) S.HitboxSize = v end,
+})
+
+-- Player
+local PlayerTab = Window:MakeTab({Name = "Player", Icon = "rbxassetid://4483345998", PremiumOnly = false})
+PlayerTab:AddToggle({
+	Name = "Infinite Jump", Default = false, Save = true, Flag = "InfJump",
+	Callback = function(v) S.InfJump = v end,
+})
+PlayerTab:AddToggle({
+	Name = "Speed Hack", Default = false, Save = true, Flag = "Speed",
+	Callback = function(v)
+		S.Speed = v
+		if not v then
+			local hum = getHumanoid(LocalPlayer.Character)
+			if hum then hum.WalkSpeed = 16 end
+		end
+	end,
+})
+PlayerTab:AddSlider({
+	Name = "Speed Value", Min = 16, Max = 250, Default = 100, Increment = 1, ValueName = "WalkSpeed",
+	Callback = function(v) S.SpeedValue = v end,
+})
+
+-- Weapon Mods
+local Mods = Window:MakeTab({Name = "Weapon Mods", Icon = "rbxassetid://4483345998", PremiumOnly = false})
+Mods:AddToggle({
+	Name = "Ammo Mod", Default = false, Save = true, Flag = "InfAmmo",
+	Callback = function(v) S.InfAmmo = v end,
+})
+Mods:AddToggle({
+	Name = "FireRate Mod", Default = false, Save = true, Flag = "FireRate",
+	Callback = function(v) S.FireRate = v end,
+})
+Mods:AddToggle({
+	Name = "Recoil Mod", Default = false, Save = true, Flag = "NoRecoil",
+	Callback = function(v) S.NoRecoil = v end,
+})
+
+OrionLib:MakeNotification({
+	Name = "Drool Hub", Content = "Loaded.", Image = "rbxassetid://4483345998", Time = 5,
+})
+
+OrionLib:Init()
